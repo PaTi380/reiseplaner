@@ -1,9 +1,9 @@
 {
-  "id": "/reiseplaner/",
+  "id": "reiseplaner-app-2026",
   "name": "Reiseplaner",
   "short_name": "Reiseplaner",
   "description": "Gepäckregeln, Checkliste, Zeitplan und Budget für den Urlaub",
-  "start_url": "/reiseplaner/",
+  "start_url": "/reiseplaner/index.html?pwa=1",
   "scope": "/reiseplaner/",
   "display": "standalone",
   "orientation": "portrait",
