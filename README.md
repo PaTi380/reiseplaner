@@ -43,7 +43,7 @@ Die Konfiguration liegt nur im jeweiligen Browser (localStorage), nicht im Repos
 1. Neues Repository, z. B. `PaTi380/reiseplaner`, `index.html` hochladen.
 2. **Settings → Pages → Branch: main / root** → Speichern.
 3. Nach ca. einer Minute erreichbar unter `https://pati380.github.io/reiseplaner/`.
-4. Auf dem Handy: Seite öffnen → „Zum Startbildschirm hinzufügen“ – läuft dann wie eine App.
+4. Auf dem Handy: Seite in Chrome öffnen → Menü ⋮ → „App installieren“ (PWA mit eigenem Logo; `manifest.json`, `sw.js`, Icons liegen im Repository).
 
 **Firebase + GitHub Pages:** In der Firebase-Konsole unter **Authentication → Settings → Autorisierte Domains** muss nichts eingetragen werden, da keine Anmeldung benutzt wird. Firestore funktioniert direkt.
 
