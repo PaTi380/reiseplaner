@@ -1,5 +1,11 @@
 # Reiseplaner – Einrichtung
 
+**Stand 06.11.2026 – alles eingerichtet:**
+- App: https://pati380.github.io/reiseplaner/
+- Repository: https://github.com/PaTi380/reiseplaner
+- Firebase-Projekt: `reiseplaner-beea5` (Firestore in europe-west3, Regeln veröffentlicht, Web-App „Reiseplaner Web“)
+- Konfiguration + Familien-Code sind im Browser der Claude-Desktop-App eingetragen; für Handy/Patricks Gerät: Schritt 2 unten (Konfiguration unter Projekteinstellungen → Meine Apps).
+
 Eine einzelne Datei (`index.html`, Version 1.1 mit Budget), läuft auf GitHub Pages, gemeinsame Daten über Firebase Firestore. Kein Login per E-Mail – stattdessen ein **Familien-Code**, den beide Geräte eintragen.
 
 ## 1. Firebase-Projekt anlegen (einmalig)
