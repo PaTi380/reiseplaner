@@ -143,7 +143,7 @@
 /* =====================================================================
    Reiseplaner – eine Datei, läuft lokal (localStorage) oder mit Firebase
    ===================================================================== */
-const APP_VERSION = "1.3";
+const APP_VERSION = "2.0";
 const LS_KEY = "reiseplaner.daten";
 const LS_CFG = "reiseplaner.config";
 const PERSONEN_DEFAULT = ["Till", "Patrick"];
@@ -169,9 +169,9 @@ const STANDARD_CHECKLISTE = [
 
 /* ---------- Zustand ---------- */
 let state = { reisen: {}, vorlage: null };     // vorlage: [{kategorie,text}] oder null = Standard
-let cfg = loadCfg();                            // {code:"", personen:[...]}
-// Familien-Code per Link setzen: .../reiseplaner/?code=XYZ (wird gespeichert, Link danach bereinigt)
-{ const p = new URLSearchParams(location.search); if (p.get("code") && p.get("code").length >= 8) { cfg.code = p.get("code").trim(); saveCfg(); history.replaceState(null, "", location.pathname); } }
+let cfg = loadCfg();                            // {personen:[...]}
+const DATEN_PFAD = "gemeinsam";                 // feste Ablage: reiseplaner/gemeinsam/...
+let auth = null, user = null, authBereit = false;
 let view = { tripId: null, tab: "ueberblick", filterWer: "alle" };
 let db = null, fs = null, unsubscribe = null;
 let saveTimer = null;
@@ -188,30 +188,47 @@ function loadLocal(){
 function saveLocal(){ localStorage.setItem(LS_KEY, JSON.stringify(state)); }
 
 async function initFirebase(){
-  const f = FIREBASE_CONFIG;
-  if (!cfg.code || cfg.code.length < 8) { setSync(""); return; }
   try {
-    const [{ initializeApp, getApps }, F] = await Promise.all([
+    const [{ initializeApp, getApps }, F, A] = await Promise.all([
       import("https://www.gstatic.com/firebasejs/10.12.0/firebase-app.js"),
-      import("https://www.gstatic.com/firebasejs/10.12.0/firebase-firestore.js")
+      import("https://www.gstatic.com/firebasejs/10.12.0/firebase-firestore.js"),
+      import("https://www.gstatic.com/firebasejs/10.12.0/firebase-auth.js")
     ]);
-    fs = F;
-    const app = getApps().length ? getApps()[0] : initializeApp(f);
-    db = F.getFirestore(app);
-    try { await F.enableIndexedDbPersistence(db); } catch {}
-    const col = F.collection(db, "reiseplaner", cfg.code, "reisen");
-    if (unsubscribe) unsubscribe();
-    unsubscribe = F.onSnapshot(col, snap => {
-      const reisen = {};
-      snap.forEach(doc => { reisen[doc.id] = doc.data(); });
-      state.reisen = reisen;
-      saveLocal(); setSync("on"); render();
-    }, err => { console.error(err); setSync("err"); toast("Firebase: " + err.code); });
-    F.onSnapshot(F.doc(db, "reiseplaner", cfg.code, "meta", "vorlage"), d => {
-      if (d.exists()) { state.vorlage = d.data().eintraege || null; saveLocal(); if (view.tab === "checkliste") render(); }
+    fs = F; window._A = A;
+    const app = getApps().length ? getApps()[0] : initializeApp(FIREBASE_CONFIG);
+    auth = A.getAuth(app);
+    try { await A.setPersistence(auth, A.browserLocalPersistence); } catch {}
+    try { await A.getRedirectResult(auth); } catch (e) { console.warn(e); }
+    A.onAuthStateChanged(auth, u => {
+      authBereit = true; user = u;
+      if (u) { startSync(F, app); } else { if (unsubscribe) { unsubscribe(); unsubscribe = null; } db = null; setSync(""); render(); }
     });
   } catch (e) { console.error(e); setSync("err"); toast("Firebase konnte nicht geladen werden"); }
 }
+function startSync(F, app){
+  db = F.getFirestore(app);
+  const col = F.collection(db, "reiseplaner", DATEN_PFAD, "reisen");
+  if (unsubscribe) unsubscribe();
+  unsubscribe = F.onSnapshot(col, snap => {
+    const reisen = {};
+    snap.forEach(doc => { reisen[doc.id] = doc.data(); });
+    state.reisen = reisen;
+    saveLocal(); setSync("on"); render();
+  }, err => { console.error(err); setSync("err"); render(); toast(err.code === "permission-denied" ? "Dieses Google-Konto ist nicht freigeschaltet" : "Firebase: " + err.code); });
+  F.onSnapshot(F.doc(db, "reiseplaner", DATEN_PFAD, "meta", "vorlage"), d => {
+    if (d.exists()) { state.vorlage = d.data().eintraege || null; saveLocal(); if (view.tab === "checkliste") render(); }
+  }, () => {});
+}
+async function anmelden(){
+  const A = window._A; if (!auth) { toast("Firebase lädt noch …"); return; }
+  const prov = new A.GoogleAuthProvider(); prov.setCustomParameters({ prompt: "select_account" });
+  try { await A.signInWithPopup(auth, prov); }
+  catch (e) {
+    if (/popup/i.test(e.code || "")) { try { await A.signInWithRedirect(auth, prov); } catch (e2) { toast("Anmeldung fehlgeschlagen"); } }
+    else if (e.code !== "auth/cancelled-popup-request") { console.error(e); toast("Anmeldung fehlgeschlagen: " + (e.code || "")); }
+  }
+}
+async function abmelden(){ if (auth) await window._A.signOut(auth); state.reisen = {}; saveLocal(); view.tripId = null; render(); }
 function setSync(s){ const el = $("#syncDot"); el.className = "sync " + s; el.title = s === "on" ? "Mit Firebase verbunden" : s === "err" ? "Firebase-Fehler" : "Nur lokal gespeichert"; }
 
 /* Speichern einer Reise (lokal sofort, Firebase gebündelt) */
@@ -219,15 +236,15 @@ function persistTrip(id){
   const t = state.reisen[id]; if (!t) return;
   t.aktualisiert = Date.now();
   saveLocal();
-  if (db) { clearTimeout(saveTimer); saveTimer = setTimeout(() => fs.setDoc(fs.doc(db, "reiseplaner", cfg.code, "reisen", id), t).catch(e => { console.error(e); toast("Speichern fehlgeschlagen"); }), 300); }
+  if (db) { clearTimeout(saveTimer); saveTimer = setTimeout(() => fs.setDoc(fs.doc(db, "reiseplaner", DATEN_PFAD, "reisen", id), t).catch(e => { console.error(e); toast("Speichern fehlgeschlagen"); }), 300); }
 }
 function deleteTrip(id){
   delete state.reisen[id]; saveLocal();
-  if (db) fs.deleteDoc(fs.doc(db, "reiseplaner", cfg.code, "reisen", id)).catch(console.error);
+  if (db) fs.deleteDoc(fs.doc(db, "reiseplaner", DATEN_PFAD, "reisen", id)).catch(console.error);
 }
 function persistVorlage(){
   saveLocal();
-  if (db) fs.setDoc(fs.doc(db, "reiseplaner", cfg.code, "meta", "vorlage"), { eintraege: state.vorlage }).catch(console.error);
+  if (db) fs.setDoc(fs.doc(db, "reiseplaner", DATEN_PFAD, "meta", "vorlage"), { eintraege: state.vorlage }).catch(console.error);
 }
 
 /* ---------- Helfer ---------- */
@@ -258,6 +275,15 @@ function wire(onSave, onDelete){
    ===================================================================== */
 function render(){
   const main = $("#main");
+  if (!user) {
+    view.tripId = null; $("#tabs").style.display = "none";
+    $("#hTitle").firstChild.textContent = "Reiseplaner"; $("#hSub").textContent = "";
+    main.innerHTML = `<div class="card" style="text-align:center;padding:28px 16px"><div style="font-size:46px">🧳</div><h2 style="justify-content:center;font-size:18px">Reiseplaner</h2>
+      <div class="muted" style="margin-bottom:16px">Gepäck, Checkliste, Zeitplan und Budget – gemeinsam für Till und Patrick.</div>
+      ${authBereit ? `<button class="btn primary" style="font-size:16px;padding:11px 18px" onclick="app.anmelden()">Mit Google anmelden</button>` : `<div class="muted">Verbinde …</div>`}
+      <div class="muted" style="margin-top:14px;font-size:12px">Nur die freigeschalteten Google-Konten haben Zugriff.</div></div>`;
+    return;
+  }
   const t = trip();
   if (!t) {
     view.tripId = null;
@@ -293,9 +319,6 @@ function renderTrips(){
         <span class="muted">🕒 ${(t.zeitplan||[]).length} Termine</span>
       </div></div>`;
   }
-  if (!db) html += `<div class="card" style="border-color:var(--accent)"><h2>🔑 Familien-Code eingeben</h2><div class="muted">Damit sehen beide dieselben Reisen. Der Code wird auf diesem Gerät gespeichert.</div>
-    <div class="quickadd"><input id="codeInput" placeholder="Familien-Code" autocapitalize="off" onkeydown="if(event.key==='Enter')app.setCode()"><button class="btn primary" onclick="app.setCode()">Verbinden</button></div>
-    <div class="muted" style="margin-top:8px">Ohne Code bleiben die Daten nur in diesem Browser.</div></div>`;
   return html;
 }
 
@@ -690,20 +713,16 @@ async function copy(id){ const i = trip().infos.find(x => x.id === id); try { aw
 function settings(){
   openModal(`<h3>⚙️ Einstellungen</h3>
     ${field("Personen (durch Komma getrennt)", inp("fPers", personen().join(", ")))}
-    <h3 style="margin-top:18px;font-size:15px">Gemeinsame Daten</h3>
-    <div class="muted">Der Familien-Code ist das Passwort für eure Reisedaten – alle Geräte brauchen denselben.</div>
-    ${field("Familien-Code (mind. 8 Zeichen)", inp("fCode", cfg.code || "", "text", 'autocapitalize="off"'))}
-    ${cfg.code ? `<div class="row" style="margin-top:8px"><button class="btn small" id="aShare">🔗 Einrichtungs-Link kopieren</button><span class="muted">Link öffnen = Code ist auf dem Gerät gesetzt</span></div>` : ""}
+    <h3 style="margin-top:18px;font-size:15px">Konto</h3>
+    <div class="row"><span>${user ? "Angemeldet als <b>" + esc(user.email) + "</b>" : "Nicht angemeldet"}</span><span class="spacer" style="flex:1"></span><button class="btn small" id="aLogout">Abmelden</button></div>
     <div class="hint">Status: ${db ? "✅ verbunden" : "nur lokal in diesem Browser"} · Version ${APP_VERSION}</div>
     <div class="row" style="margin-top:12px"><button class="btn small" id="aExport">⬇️ Daten exportieren (JSON)</button><button class="btn small" id="aImport">⬆️ Importieren</button><input type="file" id="fImp" accept=".json" style="display:none"></div>
     ${modalActions("Speichern")}`);
   wire(() => {
     cfg.personen = v("fPers").split(",").map(s => s.trim()).filter(Boolean);
-    cfg.code = v("fCode");
-    if (cfg.code && cfg.code.length < 8) { toast("Familien-Code braucht mind. 8 Zeichen"); return false; }
-    saveCfg(); toast("Gespeichert – Seite wird neu geladen"); setTimeout(() => location.reload(), 600);
+    saveCfg(); toast("Gespeichert"); render();
   });
-  const sh = $("#aShare"); if (sh) sh.onclick = async () => { const link = location.origin + location.pathname + "?code=" + encodeURIComponent(cfg.code); try { await navigator.clipboard.writeText(link); toast("Link kopiert – z. B. an Patrick schicken"); } catch { prompt("Link kopieren:", link); } };
+  $("#aLogout").onclick = () => { closeModal(); abmelden(); };
   $("#aExport").onclick = () => { const a = document.createElement("a"); a.href = URL.createObjectURL(new Blob([JSON.stringify(state, null, 2)], {type:"application/json"})); a.download = `reiseplaner-${localDate(new Date())}.json`; a.click(); };
   $("#aImport").onclick = () => $("#fImp").click();
   $("#fImp").onchange = async e => { try { const d = JSON.parse(await e.target.files[0].text()); for (const [id, t] of Object.entries(d.reisen || {})) { state.reisen[id] = t; persistTrip(id); } if (d.vorlage) { state.vorlage = d.vorlage; persistVorlage(); } closeModal(); render(); toast("Import abgeschlossen"); } catch { toast("Datei nicht lesbar"); } };
@@ -715,7 +734,7 @@ window.app = {
   tab(t){ view.tab = t; render(); window.scrollTo(0,0); },
   editTrip, editBag, quickCheck, quickAdd, toggleChk, editChk, insertVorlage, listMenu, editEv, flugAssistent, editInfo, copy, editBudget, editAusgabe,
   filterWer(w){ view.filterWer = w; render(); },
-  setCode(){ const c = v("codeInput"); if (c.length < 8) { toast("Mindestens 8 Zeichen"); return; } cfg.code = c; saveCfg(); toast("Verbinde …"); initFirebase(); },
+  anmelden, abmelden,
 };
 $("#btnHome").onclick = () => { view.tripId = null; render(); };
 $("#btnSettings").onclick = settings;
@@ -725,7 +744,7 @@ setInterval(() => { if (view.tripId && (view.tab === "ueberblick" || view.tab ==
 
 loadLocal();
 render();
-initFirebase();
+if (location.protocol.startsWith("http")) initFirebase(); else { user = { email: "lokal" }; authBereit = true; render(); }
 // PWA: Service Worker (nur über http/https, nicht bei lokaler Datei)
 if ("serviceWorker" in navigator && location.protocol.startsWith("http")) navigator.serviceWorker.register("/reiseplaner/sw.js", { scope: "/reiseplaner/" }).catch(() => {});
 </script>
