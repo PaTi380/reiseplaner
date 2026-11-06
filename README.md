@@ -28,15 +28,14 @@ service cloud.firestore {
 
 4. **Projektübersicht → Zahnrad → Projekteinstellungen → Meine Apps → Web-App (</>)** hinzufügen, Namen vergeben, *ohne* Hosting. Den angezeigten `firebaseConfig`-Block kopieren (apiKey, authDomain, projectId, …).
 
-## 2. App konfigurieren
+## 2. App auf einem Gerät einrichten
 
-1. `index.html` öffnen (lokal oder auf GitHub Pages).
-2. ⚙️ oben rechts → den kopierten `firebaseConfig`-Block in das Textfeld einfügen (die geschweiften Klammern aus der Konsole reichen, muss kein sauberes JSON sein).
-3. **Familien-Code** vergeben – mindestens 8 Zeichen, z. B. `Eifel-2026-reise`. Er wirkt wie ein Passwort: Wer ihn hat, sieht die Daten.
-4. Speichern → Seite lädt neu, der Punkt oben rechts wird **grün** = verbunden.
-5. Auf Patricks Handy dasselbe: gleiche Konfiguration, gleicher Code.
+Die Firebase-Konfiguration steckt seit Version 1.3 fest in der `index.html` (sie ist nicht geheim – der Schutz kommt aus den Firestore-Regeln). Auf einem neuen Gerät ist nur noch der **Familien-Code** nötig:
 
-Die Konfiguration liegt nur im jeweiligen Browser (localStorage), nicht im Repository. Es ist also unbedenklich, die `index.html` öffentlich auf GitHub zu haben – wie bei der Sprachlern-App.
+- Entweder beim ersten Start in das Feld „Familien-Code eingeben“ tippen → Verbinden,
+- oder den **Einrichtungs-Link** öffnen (⚙️ → „Einrichtungs-Link kopieren“, Form: `…/reiseplaner/?code=DEIN-CODE`). Der Link setzt den Code automatisch – praktisch für Patricks Handy oder nach dem Löschen von Browserdaten. Den Link nur privat weitergeben.
+
+Der Code ist das Passwort für eure Daten; ohne ihn bleiben Reisen nur lokal im Browser.
 
 ## 3. GitHub Pages
 

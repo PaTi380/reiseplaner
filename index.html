@@ -143,10 +143,12 @@
 /* =====================================================================
    Reiseplaner – eine Datei, läuft lokal (localStorage) oder mit Firebase
    ===================================================================== */
-const APP_VERSION = "1.2";
+const APP_VERSION = "1.3";
 const LS_KEY = "reiseplaner.daten";
 const LS_CFG = "reiseplaner.config";
 const PERSONEN_DEFAULT = ["Till", "Patrick"];
+// Firebase-Konfiguration ist nicht geheim (Schutz der Daten übernehmen die Firestore-Regeln + Familien-Code)
+const FIREBASE_CONFIG = { apiKey:"AIzaSyDm7DyhSifZiUX8oTFsoDRTMSqlFG67Ows", authDomain:"reiseplaner-beea5.firebaseapp.com", projectId:"reiseplaner-beea5", storageBucket:"reiseplaner-beea5.firebasestorage.app", messagingSenderId:"1049067562166", appId:"1:1049067562166:web:452886de762ebc51937217" };
 
 const uid = () => Math.random().toString(36).slice(2, 10) + Date.now().toString(36).slice(-4);
 const esc = s => String(s ?? "").replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
@@ -167,7 +169,9 @@ const STANDARD_CHECKLISTE = [
 
 /* ---------- Zustand ---------- */
 let state = { reisen: {}, vorlage: null };     // vorlage: [{kategorie,text}] oder null = Standard
-let cfg = loadCfg();                            // {firebase:{...}, code:"", personen:[...]}
+let cfg = loadCfg();                            // {code:"", personen:[...]}
+// Familien-Code per Link setzen: .../reiseplaner/?code=XYZ (wird gespeichert, Link danach bereinigt)
+{ const p = new URLSearchParams(location.search); if (p.get("code") && p.get("code").length >= 8) { cfg.code = p.get("code").trim(); saveCfg(); history.replaceState(null, "", location.pathname); } }
 let view = { tripId: null, tab: "ueberblick", filterWer: "alle" };
 let db = null, fs = null, unsubscribe = null;
 let saveTimer = null;
@@ -184,8 +188,8 @@ function loadLocal(){
 function saveLocal(){ localStorage.setItem(LS_KEY, JSON.stringify(state)); }
 
 async function initFirebase(){
-  const f = cfg.firebase;
-  if (!f || !f.projectId || !cfg.code || cfg.code.length < 6) { setSync(""); return; }
+  const f = FIREBASE_CONFIG;
+  if (!cfg.code || cfg.code.length < 8) { setSync(""); return; }
   try {
     const [{ initializeApp, getApps }, F] = await Promise.all([
       import("https://www.gstatic.com/firebasejs/10.12.0/firebase-app.js"),
@@ -289,7 +293,9 @@ function renderTrips(){
         <span class="muted">🕒 ${(t.zeitplan||[]).length} Termine</span>
       </div></div>`;
   }
-  if (!db) html += `<div class="hint">💡 Die Daten liegen derzeit nur in diesem Browser. Für die gemeinsame Nutzung mit Patrick: ⚙️ → Firebase einrichten.</div>`;
+  if (!db) html += `<div class="card" style="border-color:var(--accent)"><h2>🔑 Familien-Code eingeben</h2><div class="muted">Damit sehen beide dieselben Reisen. Der Code wird auf diesem Gerät gespeichert.</div>
+    <div class="quickadd"><input id="codeInput" placeholder="Familien-Code" autocapitalize="off" onkeydown="if(event.key==='Enter')app.setCode()"><button class="btn primary" onclick="app.setCode()">Verbinden</button></div>
+    <div class="muted" style="margin-top:8px">Ohne Code bleiben die Daten nur in diesem Browser.</div></div>`;
   return html;
 }
 
@@ -682,37 +688,25 @@ async function copy(id){ const i = trip().infos.find(x => x.id === id); try { aw
 
 /* ---------- Einstellungen ---------- */
 function settings(){
-  const f = cfg.firebase || {};
   openModal(`<h3>⚙️ Einstellungen</h3>
     ${field("Personen (durch Komma getrennt)", inp("fPers", personen().join(", ")))}
-    <h3 style="margin-top:18px;font-size:15px">Firebase (gemeinsame Daten)</h3>
-    <div class="muted">Firebase-Konfiguration aus der Firebase-Konsole einfügen (das <code>firebaseConfig</code>-Objekt oder nur die Werte). Der Familien-Code ist ein gemeinsames Geheimnis – beide Geräte brauchen denselben.</div>
-    ${field("firebaseConfig (JSON oder kopierter Codeblock)", `<textarea id="fFb" style="min-height:110px;font-family:monospace;font-size:12px" placeholder='{ "apiKey": "...", "projectId": "...", ... }'>${esc(f.projectId ? JSON.stringify(f, null, 1) : "")}</textarea>`)}
-    ${field("Familien-Code (mind. 8 Zeichen, z. B. ein Wort + Zahlen)", inp("fCode", cfg.code || "", "text", 'autocapitalize="off"'))}
-    <div class="hint">Status: ${db ? "✅ verbunden mit Projekt <b>" + esc(f.projectId) + "</b>" : "nur lokal in diesem Browser"} · Version ${APP_VERSION}</div>
+    <h3 style="margin-top:18px;font-size:15px">Gemeinsame Daten</h3>
+    <div class="muted">Der Familien-Code ist das Passwort für eure Reisedaten – alle Geräte brauchen denselben.</div>
+    ${field("Familien-Code (mind. 8 Zeichen)", inp("fCode", cfg.code || "", "text", 'autocapitalize="off"'))}
+    ${cfg.code ? `<div class="row" style="margin-top:8px"><button class="btn small" id="aShare">🔗 Einrichtungs-Link kopieren</button><span class="muted">Link öffnen = Code ist auf dem Gerät gesetzt</span></div>` : ""}
+    <div class="hint">Status: ${db ? "✅ verbunden" : "nur lokal in diesem Browser"} · Version ${APP_VERSION}</div>
     <div class="row" style="margin-top:12px"><button class="btn small" id="aExport">⬇️ Daten exportieren (JSON)</button><button class="btn small" id="aImport">⬆️ Importieren</button><input type="file" id="fImp" accept=".json" style="display:none"></div>
     ${modalActions("Speichern")}`);
   wire(() => {
     cfg.personen = v("fPers").split(",").map(s => s.trim()).filter(Boolean);
-    const raw = v("fFb");
-    if (raw) {
-      const parsed = parseFirebaseConfig(raw);
-      if (!parsed || !parsed.projectId) { toast("Firebase-Konfiguration nicht lesbar"); return false; }
-      cfg.firebase = parsed;
-    } else cfg.firebase = null;
     cfg.code = v("fCode");
-    if (cfg.firebase && cfg.code.length < 8) { toast("Familien-Code braucht mind. 8 Zeichen"); return false; }
+    if (cfg.code && cfg.code.length < 8) { toast("Familien-Code braucht mind. 8 Zeichen"); return false; }
     saveCfg(); toast("Gespeichert – Seite wird neu geladen"); setTimeout(() => location.reload(), 600);
   });
+  const sh = $("#aShare"); if (sh) sh.onclick = async () => { const link = location.origin + location.pathname + "?code=" + encodeURIComponent(cfg.code); try { await navigator.clipboard.writeText(link); toast("Link kopiert – z. B. an Patrick schicken"); } catch { prompt("Link kopieren:", link); } };
   $("#aExport").onclick = () => { const a = document.createElement("a"); a.href = URL.createObjectURL(new Blob([JSON.stringify(state, null, 2)], {type:"application/json"})); a.download = `reiseplaner-${localDate(new Date())}.json`; a.click(); };
   $("#aImport").onclick = () => $("#fImp").click();
   $("#fImp").onchange = async e => { try { const d = JSON.parse(await e.target.files[0].text()); for (const [id, t] of Object.entries(d.reisen || {})) { state.reisen[id] = t; persistTrip(id); } if (d.vorlage) { state.vorlage = d.vorlage; persistVorlage(); } closeModal(); render(); toast("Import abgeschlossen"); } catch { toast("Datei nicht lesbar"); } };
-}
-function parseFirebaseConfig(raw){
-  try { return JSON.parse(raw); } catch {}
-  // lockeres JS-Objekt (wie aus der Konsole kopiert) in JSON wandeln
-  const m = raw.match(/\{[\s\S]*\}/); if (!m) return null;
-  try { return JSON.parse(m[0].replace(/(\w+)\s*:/g, '"$1":').replace(/'/g, '"').replace(/,\s*}/g, "}")); } catch { return null; }
 }
 
 /* ---------- Navigation / öffentliche Funktionen ---------- */
@@ -721,6 +715,7 @@ window.app = {
   tab(t){ view.tab = t; render(); window.scrollTo(0,0); },
   editTrip, editBag, quickCheck, quickAdd, toggleChk, editChk, insertVorlage, listMenu, editEv, flugAssistent, editInfo, copy, editBudget, editAusgabe,
   filterWer(w){ view.filterWer = w; render(); },
+  setCode(){ const c = v("codeInput"); if (c.length < 8) { toast("Mindestens 8 Zeichen"); return; } cfg.code = c; saveCfg(); toast("Verbinde …"); initFirebase(); },
 };
 $("#btnHome").onclick = () => { view.tripId = null; render(); };
 $("#btnSettings").onclick = settings;
