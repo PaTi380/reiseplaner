@@ -143,7 +143,7 @@
 /* =====================================================================
    Reiseplaner – eine Datei, läuft lokal (localStorage) oder mit Firebase
    ===================================================================== */
-const APP_VERSION = "2.0";
+const APP_VERSION = "2.1";
 const LS_KEY = "reiseplaner.daten";
 const LS_CFG = "reiseplaner.config";
 const PERSONEN_DEFAULT = ["Till", "Patrick"];
@@ -374,10 +374,10 @@ function renderUeberblick(t){
       <div class="progress"><i style="width:${gesamt ? Math.round((gesamt-offen.length)/gesamt*100) : 0}%"></i></div>
       <div class="muted" style="margin-top:6px">${gesamt ? (offen.length ? offen.slice(0,3).map(o => esc(o.text)).join(", ") + (offen.length > 3 ? ` … (+${offen.length-3})` : "") : "Alles erledigt 🎉") : "Noch keine Einträge"}</div>
     </div>
-    ${(() => { const b = budgetOf(t); const g = Number(b.gesamt)||0; const u = b.ausgaben.filter(a => (a.quelle||"Urlaubsgeld") === "Urlaubsgeld").reduce((s,a) => s + (Number(a.betrag)||0), 0); if (!g && !b.ausgaben.length) return "";
-      return `<div class="card" onclick="app.tab('budget')" style="cursor:pointer"><h2>💶 Urlaubsgeld <span class="spacer"></span><span class="muted">${eur(g-u)} übrig</span></h2>
+    ${(() => { const { b, ruecklage: g, ausRuecklage: u, privat } = budgetZahlen(t); if (!g && !b.ausgaben.length) return "";
+      return `<div class="card" onclick="app.tab('budget')" style="cursor:pointer"><h2>💶 Rücklage <span class="spacer"></span><span class="muted">${eur(g-u)} übrig</span></h2>
       <div class="progress"><i style="width:${g ? Math.min(100, Math.round(u/g*100)) : 0}%;background:${u > g ? "var(--warn)" : "var(--accent)"}"></i></div>
-      <div class="muted" style="margin-top:6px">${eur(u)} von ${eur(g)} ausgegeben · ${b.ausgaben.length} Ausgaben</div></div>`; })()}
+      <div class="muted" style="margin-top:6px">${eur(u)} von ${eur(g)} ausgegeben · privat: ${Object.entries(privat).map(([n,v]) => esc(n) + " " + eur(v)).join(", ")}</div></div>`; })()}
     <div class="card" onclick="app.tab('gepaeck')" style="cursor:pointer">
       <h2>🧳 Gepäck <span class="spacer"></span><span class="muted">${(t.gepaeck||[]).length} Regeln</span></h2>
       <div class="muted">${(t.gepaeck||[]).length ? (t.gepaeck||[]).map(g => `${g.anzahl||1}× ${esc(g.art)}${g.gewicht ? " (" + esc(g.gewicht) + " kg)" : ""}`).join(" · ") + (sumKg ? ` · gesamt max. ${sumKg} kg` : "") : "Noch keine Gepäckregeln eingetragen"}</div>
@@ -601,85 +601,106 @@ function flugAssistent(){
 function localDate(d){ return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,"0")}-${String(d.getDate()).padStart(2,"0")}`; }
 
 /* ---------- Budget ---------- */
-const QUELLEN_DEFAULT = ["Urlaubsgeld", "Girokonto", "Kreditkarte", "Bargeld"];
+// Bezahlt von: "beide" = gemeinsame Rücklage (gemeinsames Konto), sonst Name = privat aus eigener Tasche
 const KAT_AUSGABE = ["Unterkunft", "Flug / Anreise", "Essen & Trinken", "Mietwagen / Transport", "Ausflüge", "Einkäufe", "Sonstiges"];
+const PERSON_FARBEN = ["#f97316", "#6366f1", "#e11d48", "#0ea5e9"];
 const eur = n => (Number(n)||0).toLocaleString("de-DE", { style:"currency", currency:"EUR", minimumFractionDigits: 0, maximumFractionDigits: 2 });
 function budgetOf(t){ t.budget = t.budget || { gesamt: 0, ausgaben: [] }; t.budget.ausgaben = t.budget.ausgaben || []; return t.budget; }
-function quellen(t){ return [...new Set([...QUELLEN_DEFAULT, ...budgetOf(t).ausgaben.map(a => a.quelle).filter(Boolean)])]; }
+// ältere Einträge (vor v2.1) ohne "zahler": eingetragene Person = privat, sonst Rücklage
+function zahlerOf(a){ if (a.zahler) return a.zahler; return (a.wer && personen().includes(a.wer)) ? a.wer : "beide"; }
+function zahlerLabel(z){ return z === "beide" ? "Rücklage (beide)" : z + " privat"; }
+function budgetZahlen(t){
+  const b = budgetOf(t);
+  const ruecklage = Number(b.gesamt)||0;
+  const summe = b.ausgaben.reduce((s,a) => s + (Number(a.betrag)||0), 0);
+  const ausRuecklage = b.ausgaben.filter(a => zahlerOf(a) === "beide").reduce((s,a) => s + (Number(a.betrag)||0), 0);
+  const privat = {}; for (const p of personen()) privat[p] = 0;
+  for (const a of b.ausgaben) { const z = zahlerOf(a); if (z !== "beide") privat[z] = (privat[z]||0) + (Number(a.betrag)||0); }
+  return { b, ruecklage, summe, ausRuecklage, rest: ruecklage - ausRuecklage, privat };
+}
 
 function renderBudget(t){
-  const b = budgetOf(t);
-  const gesamt = Number(b.gesamt)||0;
+  const { b, ruecklage, summe, ausRuecklage, rest, privat } = budgetZahlen(t);
   const aus = b.ausgaben.slice().sort((x,y) => (y.datum||"").localeCompare(x.datum||""));
-  const summe = aus.reduce((s,a) => s + (Number(a.betrag)||0), 0);
-  const ausUrlaubsgeld = aus.filter(a => (a.quelle||"Urlaubsgeld") === "Urlaubsgeld").reduce((s,a) => s + (Number(a.betrag)||0), 0);
-  const rest = gesamt - ausUrlaubsgeld;
-  // Säulen: Urlaubsgeld (Rest + verbraucht) und je andere Quelle das Ausgegebene
-  const proQuelle = {};
-  for (const a of aus) { const q = a.quelle || "Urlaubsgeld"; if (q === "Urlaubsgeld") continue; proQuelle[q] = (proQuelle[q]||0) + (Number(a.betrag)||0); }
-  const saeulen = [{ name:"Urlaubsgeld", rest: Math.max(rest,0), verbraucht: ausUrlaubsgeld, ueber: Math.max(-rest,0) }, ...Object.entries(proQuelle).map(([name, v]) => ({ name, rest:0, verbraucht:v, ueber:0 }))];
-  let html = `<div class="card"><h2>💶 Budget <span class="spacer"></span><button class="btn small" onclick="app.editBudget()">Urlaubsgeld</button><button class="btn primary small" onclick="app.editAusgabe()">+ Ausgabe</button></h2>`;
-  if (!gesamt && !aus.length) html += `<div class="empty"><div class="big">💶</div>Lege zuerst das Urlaubsgeld fest – die Säule schrumpft dann mit jeder Ausgabe.</div>`;
+  const saeulen = [
+    { name:"Rücklage", sub: rest < 0 ? "überzogen" : "übrig", rest: Math.max(rest,0), verbraucht: Math.min(ausRuecklage, ruecklage), ueber: Math.max(-rest,0), farbe:"var(--accent)", label: eur(rest), haupt:true },
+    ...Object.entries(privat).map(([name, v], i) => ({ name, sub:"privat bezahlt", rest:0, verbraucht:v, ueber:0, farbe: PERSON_FARBEN[i % PERSON_FARBEN.length], label: eur(v) }))
+  ];
+  let html = `<div class="card"><h2>💶 Budget <span class="spacer"></span><button class="btn small" onclick="app.editBudget()">Rücklage</button><button class="btn primary small" onclick="app.editAusgabe()">+ Ausgabe</button></h2>`;
+  if (!ruecklage && !aus.length) html += `<div class="empty"><div class="big">💶</div>Lege zuerst die Rücklage vom gemeinsamen Konto fest – ihre Säule schrumpft mit jeder Ausgabe, die ihr gemeinsam bezahlt.</div>`;
   else {
-    html += `<div class="row" style="gap:16px;margin-bottom:8px">
-      <div><div class="muted">Urlaubsgeld</div><b>${eur(gesamt)}</b></div>
-      <div><div class="muted">davon ausgegeben</div><b>${eur(ausUrlaubsgeld)}</b></div>
+    html += `<div class="row" style="gap:16px;margin-bottom:4px">
+      <div><div class="muted">Rücklage</div><b>${eur(ruecklage)}</b></div>
+      <div><div class="muted">davon ausgegeben</div><b>${eur(ausRuecklage)}</b></div>
       <div><div class="muted">übrig</div><b style="color:${rest < 0 ? "var(--warn)" : "var(--ok)"}">${eur(rest)}</b></div>
-      ${summe - ausUrlaubsgeld ? `<div><div class="muted">andere Konten</div><b>${eur(summe - ausUrlaubsgeld)}</b></div>` : ""}
-    </div>${budgetChart(saeulen, gesamt)}</div>`;
+    </div>
+    <div class="row" style="gap:16px;margin-bottom:8px">
+      ${Object.entries(privat).map(([n, v]) => `<div><div class="muted">${esc(n)} privat</div><b>${eur(v)}</b></div>`).join("")}
+      <div><div class="muted">Reise gesamt</div><b>${eur(summe)}</b></div>
+    </div>${budgetChart(saeulen, ruecklage)}</div>`;
   }
   html += `<div class="card"><h2>Ausgaben <span class="spacer"></span><span class="muted">${eur(summe)} gesamt</span></h2>`;
   if (!aus.length) html += `<div class="muted">Noch keine Ausgaben.</div>`;
-  for (const a of aus) html += `<div class="item" onclick="app.editAusgabe('${a.id}')" style="cursor:pointer">
-      <div class="body"><div class="title">${esc(a.text)}</div><div class="meta">${a.datum ? fmtDateShort(a.datum) + " · " : ""}${esc(a.kategorie||"")}${a.wer ? " · " + esc(a.wer) : ""} · <span class="pill ${(a.quelle||"Urlaubsgeld")==="Urlaubsgeld" ? "" : "grey"}">${esc(a.quelle||"Urlaubsgeld")}</span></div></div>
+  for (const a of aus) {
+    const z = zahlerOf(a); const pi = personen().indexOf(z);
+    const pill = z === "beide" ? `<span class="pill">Rücklage</span>` : `<span class="pill" style="background:${PERSON_FARBEN[pi % PERSON_FARBEN.length]}22;color:${PERSON_FARBEN[pi % PERSON_FARBEN.length]}">${esc(z)} privat</span>`;
+    html += `<div class="item" onclick="app.editAusgabe('${a.id}')" style="cursor:pointer">
+      <div class="body"><div class="title">${esc(a.text)}</div><div class="meta">${a.datum ? fmtDateShort(a.datum) + " · " : ""}${esc(a.kategorie||"")} · ${pill}</div></div>
       <div style="font-weight:700;white-space:nowrap">${eur(a.betrag)}</div></div>`;
+  }
   html += `</div>`;
   return html;
 }
-function budgetChart(saeulen, gesamt){
-  const W = 100 * saeulen.length + 20, H = 190, pad = 36, top = 22;
-  const max = Math.max(gesamt, ...saeulen.map(s => s.rest + s.verbraucht + s.ueber), 1);
+function budgetChart(saeulen, ruecklage){
+  const W = 100 * saeulen.length + 20, H = 200, pad = 40, top = 22;
+  const max = Math.max(ruecklage, ...saeulen.map(s => s.rest + s.verbraucht + s.ueber), 1);
   const y = v => top + (H - top - pad) * (1 - v / max);
   const bw = 56;
   let svg = `<svg viewBox="0 0 ${W} ${H}" style="width:100%;max-width:${W*1.6}px;display:block;margin:6px auto 0" font-size="11" font-family="inherit">`;
   saeulen.forEach((s, i) => {
     const x = 20 + i * 100 + (100 - bw) / 2;
-    const total = s.rest + s.verbraucht + s.ueber;
-    if (i === 0 && gesamt) svg += `<rect x="${x}" y="${y(gesamt)}" width="${bw}" height="${y(0) - y(gesamt)}" rx="6" fill="none" stroke="var(--line)" stroke-dasharray="3 3"/>`;
-    if (s.rest) svg += `<rect x="${x}" y="${y(s.rest)}" width="${bw}" height="${y(0) - y(s.rest)}" rx="6" fill="var(--accent)"/>`;
-    if (s.verbraucht) svg += `<rect x="${x}" y="${y(s.rest + s.verbraucht)}" width="${bw}" height="${y(s.rest) - y(s.rest + s.verbraucht)}" rx="${s.rest ? 0 : 6}" fill="${i === 0 ? "var(--line)" : "var(--muted)"}" opacity="${i === 0 ? 1 : .7}"/>`;
-    if (s.ueber) svg += `<rect x="${x}" y="${y(total)}" width="${bw}" height="${y(s.rest + s.verbraucht) - y(total)}" fill="var(--warn)"/>`;
-    const label = i === 0 ? eur(s.rest - s.ueber) : eur(s.verbraucht);
-    svg += `<text x="${x + bw/2}" y="${y(total) - 6}" text-anchor="middle" fill="var(--text)" font-weight="600">${label}</text>`;
-    svg += `<text x="${x + bw/2}" y="${H - pad + 16}" text-anchor="middle" fill="var(--muted)">${esc(s.name)}</text>`;
-    if (i === 0) svg += `<text x="${x + bw/2}" y="${H - pad + 29}" text-anchor="middle" fill="var(--muted)" font-size="10">${s.ueber ? "überzogen" : "übrig"}</text>`;
-    else svg += `<text x="${x + bw/2}" y="${H - pad + 29}" text-anchor="middle" fill="var(--muted)" font-size="10">bezahlt</text>`;
+    if (s.haupt) {
+      const total = s.rest + s.verbraucht + s.ueber;
+      if (ruecklage) svg += `<rect x="${x}" y="${y(ruecklage)}" width="${bw}" height="${y(0) - y(ruecklage)}" rx="6" fill="none" stroke="var(--line)" stroke-dasharray="3 3"/>`;
+      if (s.rest) svg += `<rect x="${x}" y="${y(s.rest)}" width="${bw}" height="${y(0) - y(s.rest)}" rx="6" fill="${s.farbe}"/>`;
+      if (s.ueber) svg += `<rect x="${x}" y="${y(ruecklage + s.ueber)}" width="${bw}" height="${y(ruecklage) - y(ruecklage + s.ueber)}" rx="6" fill="var(--warn)"/>`;
+      svg += `<text x="${x + bw/2}" y="${y(Math.max(ruecklage, s.rest + s.ueber)) - 6}" text-anchor="middle" fill="var(--text)" font-weight="600">${s.label}</text>`;
+    } else {
+      if (s.verbraucht) svg += `<rect x="${x}" y="${y(s.verbraucht)}" width="${bw}" height="${y(0) - y(s.verbraucht)}" rx="6" fill="${s.farbe}"/>`;
+      svg += `<text x="${x + bw/2}" y="${y(s.verbraucht) - 6}" text-anchor="middle" fill="var(--text)" font-weight="600">${s.label}</text>`;
+    }
+    svg += `<text x="${x + bw/2}" y="${H - pad + 16}" text-anchor="middle" fill="var(--text)">${esc(s.name)}</text>`;
+    svg += `<text x="${x + bw/2}" y="${H - pad + 30}" text-anchor="middle" fill="var(--muted)" font-size="10">${s.sub}</text>`;
   });
   svg += `<line x1="14" x2="${W-6}" y1="${y(0)}" y2="${y(0)}" stroke="var(--line)"/></svg>`;
   return svg;
 }
 function editBudget(){
   const t = trip(); const b = budgetOf(t);
-  openModal(`<h3>Urlaubsgeld</h3><div class="muted">Der Betrag, der für diese Reise zur Verfügung steht. Ausgaben mit Quelle „Urlaubsgeld“ werden davon abgezogen.</div>
-    ${field("Urlaubsgeld (€)", inp("fGes", b.gesamt || "", "number", 'step="10" inputmode="decimal"'))}
+  openModal(`<h3>Rücklage</h3><div class="muted">Fester Betrag vom gemeinsamen Konto für diese Reise. Alles, was ihr als „beide“ bezahlt, wird davon abgezogen.</div>
+    ${field("Rücklage (€)", inp("fGes", b.gesamt || "", "number", 'step="10" inputmode="decimal"'))}
     ${modalActions("Speichern")}`);
   wire(() => { b.gesamt = parseFloat(v("fGes").replace(",", ".")) || 0; persistTrip(t.id); render(); });
 }
 function editAusgabe(id){
   const t = trip(); const b = budgetOf(t);
-  const a = id ? b.ausgaben.find(x => x.id === id) : { datum: localDate(new Date()), text:"", betrag:"", kategorie:"Sonstiges", quelle:"Urlaubsgeld", wer:"" };
+  const a = id ? b.ausgaben.find(x => x.id === id) : { datum: localDate(new Date()), text:"", betrag:"", kategorie:"Sonstiges", zahler:"beide" };
+  const z = zahlerOf(a);
+  const optionen = ["beide", ...personen()];
   openModal(`<h3>${id ? "Ausgabe bearbeiten" : "Neue Ausgabe"}</h3>
-    ${field("Was", inp("fText", a.text, "text", 'placeholder="z. B. Abendessen Taverne, Mietwagen, Eis"'))}
+    ${field("Was", inp("fText", a.text, "text", 'placeholder="z. B. Abendessen, Mietwagen, Eis"'))}
     <div class="grid2">${field("Betrag (€)", inp("fBetrag", a.betrag, "number", 'step="0.01" inputmode="decimal"'))}${field("Datum", inp("fDat", a.datum, "date"))}</div>
-    <div class="grid2">${field("Bezahlt von (Konto / Geld)", inp("fQuelle", a.quelle || "Urlaubsgeld", "text", 'list="quelleList"'))}${field("Kategorie", sel("fKat", a.kategorie || "Sonstiges", KAT_AUSGABE))}</div>
-    <datalist id="quelleList">${quellen(t).map(q => `<option value="${esc(q)}">`).join("")}</datalist>
-    ${field("Wer hat bezahlt (optional)", sel("fWer", a.wer || "", ["", ...personen()]))}
+    ${field("Bezahlt von", `<div class="row" id="fZahler">${optionen.map(o => `<button type="button" class="btn small ${o===z?"primary":""}" data-z="${esc(o)}">${o === "beide" ? "Beide (Rücklage)" : esc(o) + " (privat)"}</button>`).join("")}</div>`)}
+    ${field("Kategorie", sel("fKat", a.kategorie || "Sonstiges", KAT_AUSGABE))}
     ${modalActions("Speichern", id ? "mDelete" : null)}`);
+  let gewaehlt = z;
+  document.querySelectorAll("#fZahler button").forEach(btn => btn.onclick = () => { gewaehlt = btn.dataset.z; document.querySelectorAll("#fZahler button").forEach(x => x.classList.toggle("primary", x === btn)); });
   wire(() => {
     const betrag = parseFloat(v("fBetrag").replace(",", "."));
     if (!v("fText") || isNaN(betrag)) { toast("Text und Betrag sind nötig"); return false; }
     const na = id ? a : { id: uid() };
-    Object.assign(na, { text:v("fText"), betrag, datum:v("fDat"), quelle:v("fQuelle") || "Urlaubsgeld", kategorie:v("fKat"), wer:v("fWer") });
+    Object.assign(na, { text:v("fText"), betrag, datum:v("fDat"), zahler: gewaehlt, kategorie:v("fKat") });
+    delete na.quelle; delete na.wer;
     if (!id) b.ausgaben.push(na); persistTrip(t.id); render();
   }, () => { b.ausgaben = b.ausgaben.filter(x => x.id !== id); persistTrip(t.id); render(); });
 }
